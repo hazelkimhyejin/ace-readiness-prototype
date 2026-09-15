@@ -1,14 +1,26 @@
+import hashlib
+import io
+import random
+import time
+from datetime import datetime
+
+import pandas as pd
 import streamlit as st
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover
+    PdfReader = None
 
 st.set_page_config(
     page_title="ACE Readiness — OctaiPipe",
     page_icon="🟧",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ---------------------------------------------------------------------------
-# Brand styling (OctaiPipe palette) injected as CSS
+# Brand styling (OctaiPipe palette)
 # ---------------------------------------------------------------------------
 st.markdown("""
 <style>
@@ -17,9 +29,8 @@ st.markdown("""
         --salmon:#FCB79B; --peach:#FED4C2; --blush:#FEE8DF;
         --green:#4E8F2C; --greenbg:#E9F7DE; --red:#B23A2F; --line:#E2DEDC;
     }
-    html, body, [class*="css"]  { font-family: Arial, "Helvetica Neue", sans-serif; }
+    html, body, [class*="css"] { font-family: Arial, "Helvetica Neue", sans-serif; }
     .stApp { background-color: var(--offwhite); }
-
     .topbar{
         background: var(--black); color: white; padding: 14px 24px;
         border-radius: 8px; margin-bottom: 18px;
@@ -27,218 +38,423 @@ st.markdown("""
     }
     .topbar b { color: var(--orange); }
     .topbar .env { color:#B9B9B9; font-size: 12px; }
-
-    .hero h1 { font-weight:400; font-size: 40px; line-height:1.25; margin-bottom: 10px; }
-    .hero p.sub { color: var(--grey); font-size: 16px; max-width: 640px; }
-
-    .stat-num { color: var(--orange); font-size: 30px; }
-    .stat-lbl { color: var(--grey); font-size: 13px; }
-
-    .card{
-        background: white; border: 1px solid var(--line); border-radius: 8px;
-        padding: 20px 22px; height: 100%;
-    }
+    .card{ background: white; border: 1px solid var(--line); border-radius: 8px;
+        padding: 20px 22px; height: 100%; }
     .card h3 { margin-top:0; font-size: 16px; }
     .metric-row{ display:flex; justify-content:space-between; font-size: 14px; margin-bottom: 4px;}
-
     .tag{ display:inline-block; font-size: 11px; padding: 3px 10px; border-radius: 20px; margin: 4px 6px 0 0;}
     .tag.warn{ background: var(--peach); color: var(--red);}
     .tag.ok{ background: var(--greenbg); color: var(--green);}
-
     .tier-pill{ display:inline-block; background: var(--blush); color: var(--black);
         font-size: 12px; padding: 4px 12px; border-radius: 20px; margin-bottom: 8px;}
-
-    .price-out { font-size: 38px; margin: 4px 0 0 0; }
-    .timeline-out { color: var(--grey); font-size: 13px; margin-bottom: 14px; }
-
-    .credit-box{ background: var(--offwhite); border-radius: 6px; padding: 14px 16px; font-size: 13px; color: var(--grey);}
-
-    .step-n{ color: var(--orange); font-size: 13px; margin-bottom:4px;}
-    .step h4{ margin: 0 0 4px 0; font-size: 14px;}
-    .step p{ color: var(--grey); font-size: 13px; margin:0;}
-
-    .cta-box{ background: var(--black); color: white; border-radius: 10px; padding: 30px 36px; }
-    .cta-box p { color: #C9C9C9; font-size: 14px; }
-
-    .footer-col h5{ font-size: 12px; margin-bottom: 6px; }
-    .footer-col p{ font-size: 12px; color: var(--grey); }
-
+    .price-out { font-size: 34px; margin: 4px 0 0 0; }
+    .timeline-out { color: var(--grey); font-size: 13px; margin-bottom: 10px; }
+    .credit-box{ background: var(--offwhite); border-radius: 6px; padding: 12px 16px; font-size: 13px; color: var(--grey);}
+    .note-box{ background: var(--blush); border-radius: 6px; padding: 12px 16px; font-size: 13px; color: var(--black); margin-bottom: 16px;}
     div.stButton > button {
         background-color: var(--orange); color: var(--black); border: none;
-        font-weight: 600; padding: 0.6em 1.4em; border-radius: 6px;
+        font-weight: 600; padding: 0.5em 1.3em; border-radius: 6px;
     }
     div.stButton > button:hover { background-color: var(--salmon); color: var(--black); }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# Top bar
-# ---------------------------------------------------------------------------
-st.markdown("""
-<div class="topbar">
-    <div><b>OctaiPipe</b> &middot; ACE Readiness Portal</div>
-    <div class="env">Prototype &mdash; internal pitch build</div>
-</div>
-""", unsafe_allow_html=True)
 
-# ---------------------------------------------------------------------------
-# Hero
-# ---------------------------------------------------------------------------
-st.markdown("""
-<div class="hero">
-    <h1>A machine-readable model of your site,<br>delivered before you commit to anything.</h1>
-    <p class="sub">ACE Readiness turns the site assessment you're already paying someone for into a
-    fixed-fee, fast-turnaround engagement &mdash; and credits the fee back if you move to ACE.</p>
-</div>
-""", unsafe_allow_html=True)
-
-c1, c2, c3 = st.columns(3)
-for col, num, lbl in [
-    (c1, "5&ndash;15", "business days to delivery"),
-    (c2, "100%", "fee credited within 6 months"),
-    (c3, "4", "deliverables, one engagement"),
-]:
-    with col:
-        st.markdown(f'<div class="stat-num">{num}</div><div class="stat-lbl">{lbl}</div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# 1. Pricing calculator
-# ---------------------------------------------------------------------------
-st.subheader("1. Price your site")
-st.caption("Pricing is banded by IT load. Move the slider to see the tier, fee, and delivery window for a site like yours.")
-
-TIERS = [
-    (1,  "Tier 1 · <1MW",    15000, "5 business days"),
-    (5,  "Tier 2 · 1–5MW",   35000, "8 business days"),
-    (20, "Tier 3 · 5–20MW",  65000, "12 business days"),
-    (float("inf"), "Tier 4 · 20MW+", None, "15+ business days, scoped"),
-]
-
-left, right = st.columns([1, 1])
-with left:
-    load = st.slider("IT load (MW)", min_value=0.2, max_value=40.0, value=3.0, step=0.1)
-    conv = st.selectbox(
-        "Expected time to ACE decision",
-        ["Within 6 months", "7–9 months", "After 9 months"],
-    )
-
-tier_name, price, days = next((t[1], t[2], t[3]) for t in TIERS if load <= t[0])
-
-with right:
-    st.markdown(f'<span class="tier-pill">{tier_name}</span>', unsafe_allow_html=True)
-    price_display = f"${price:,.0f}" if price else "Custom quote"
-    st.markdown(f'<div class="price-out">{price_display}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="timeline-out">Delivered in {days}</div>', unsafe_allow_html=True)
-
-    if conv == "Within 6 months":
-        credit_text = "If you sign an ACE subscription <b>within 6 months</b>, the full fee is credited against year-one ACE spend."
-    elif conv == "7–9 months":
-        credit_text = "Signing between <b>7 and 9 months</b> credits half the fee against year-one ACE spend."
-    else:
-        credit_text = "Outside 9 months, the engagement stands on its own &mdash; no credit applies, no obligation either way."
-    st.markdown(f'<div class="credit-box">{credit_text}</div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# 2. Sample deliverables
-# ---------------------------------------------------------------------------
-st.subheader("2. What you get")
-st.caption("Sample output from a completed engagement — a 6MW colo site, ingested from M&E drawings, "
-           "equipment schedules and 90 days of BMS trend data.")
-
-d1, d2, d3, d4 = st.columns(4)
-
-with d1:
-    st.markdown('<div class="card"><h3>Brick site model</h3>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Assets modelled</span><b>1,842</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Drawing sets ingested</span><b>37</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Model coverage</span><b>94%</b></div>', unsafe_allow_html=True)
-    st.progress(0.94)
-    st.markdown('<span class="tag ok">As-designed twin ready</span></div>', unsafe_allow_html=True)
-
-with d2:
-    st.markdown('<div class="card"><h3>BMS point map</h3>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Points reconciled</span><b>6,210 / 6,600</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>As-controlled match</span><b>88%</b></div>', unsafe_allow_html=True)
-    st.progress(0.88)
-    st.markdown('<span class="tag warn">390 points unmapped</span></div>', unsafe_allow_html=True)
-
-with d3:
-    st.markdown('<div class="card"><h3>Gap &amp; health report</h3>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Mislabelled sensors</span><b>54</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Controllers in conflict</span><b>9</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Missing metering</span><b>22</b></div>', unsafe_allow_html=True)
-    st.markdown('<span class="tag warn">9 sequence-drift flags</span>'
-                '<span class="tag ok">Full log included</span></div>', unsafe_allow_html=True)
-
-with d4:
-    st.markdown('<div class="card"><h3>Optimisation estimate</h3>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Cooling energy saving</span><b>11–16%</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Est. annual saving</span><b>$310k–$450k</b></div>', unsafe_allow_html=True)
-    st.markdown('<div class="metric-row"><span>Costed ACE deployment</span><b>Included</b></div>', unsafe_allow_html=True)
-    st.markdown('<span class="tag ok">3 load scenarios modelled</span></div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# 3. Delivery journey
-# ---------------------------------------------------------------------------
-st.subheader("3. How it's delivered")
-st.caption("Planner does the ingestion and modelling. A named engineer validates it — capped hours, so the fee stays fixed.")
-
-j1, j2, j3, j4 = st.columns(4)
-steps = [
-    (j1, "Day 0–1", "Document intake", "Drawings, schedules and O&M docs uploaded to Planner; BMS export connected read-only."),
-    (j2, "Day 1–3", "Automated modelling", "Planner classifies documents, builds the site hierarchy, and maps points into Brick — unattended."),
-    (j3, "Day 3–5", "Engineer validation", "Capped review window (4–16 hrs by tier) to resolve ambiguous mappings and sanity-check the gap list."),
-    (j4, "Day 5–15", "Handover", "Report and portal access delivered direct, or via a certified partner for site-walk-dependent tiers."),
-]
-for col, n, title, desc in steps:
-    with col:
-        st.markdown(f'<div class="step"><div class="step-n">{n}</div><h4>{title}</h4><p>{desc}</p></div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------------------------
-# 4. Conversion CTA
-# ---------------------------------------------------------------------------
-cta_l, cta_r = st.columns([3, 1])
-with cta_l:
-    st.markdown("""
-    <div class="cta-box">
-        <h2 style="margin-top:0;">Ready to convert?</h2>
-        <p>Your ACE Readiness fee is held as a credit for 6 months from delivery. Converting inside that
-        window applies it in full against year-one ACE subscription.</p>
+def topbar(env_label="Prototype — internal pitch build"):
+    st.markdown(f"""
+    <div class="topbar">
+        <div><b>OctaiPipe</b> &middot; ACE Readiness Portal</div>
+        <div class="env">{env_label}</div>
     </div>
     """, unsafe_allow_html=True)
-with cta_r:
-    st.write("")
-    st.write("")
-    if st.button("Start ACE subscription →"):
-        st.success("Credit applied — a solutions engineer will follow up to confirm scope.")
 
-st.markdown("---")
 
 # ---------------------------------------------------------------------------
-# Footer
+# Session state
 # ---------------------------------------------------------------------------
-f1, f2, f3 = st.columns(3)
-with f1:
-    st.markdown('<div class="footer-col"><h5>Who buys this</h5>'
-                '<p>Facilities & critical engineering leads booking asset registers or BMS audits; '
-                'sustainability leads preparing ISO 50001 / EED reporting; M&A teams needing site due '
-                'diligence — with or without an ACE decision on the table.</p></div>', unsafe_allow_html=True)
-with f2:
-    st.markdown('<div class="footer-col"><h5>Who owns what</h5>'
-                '<p>OctaiPipe owns the Planner tooling and the underlying model. The customer receives the '
-                'report and read-only portal access; the twin becomes the live operating model on ACE '
-                'conversion.</p></div>', unsafe_allow_html=True)
-with f3:
-    st.markdown('<div class="footer-col"><h5>Who can sell it</h5>'
-                '<p>Direct for Tier 3–4 sites. ABB, CBRE, Datalec and Italtel can deliver Tier 1–2 self-serve '
-                'through a partner portal, on a revenue share.</p></div>', unsafe_allow_html=True)
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "engagements" not in st.session_state:
+    st.session_state.engagements = []  # list of dicts
+if "current_id" not in st.session_state:
+    st.session_state.current_id = None
+if "view" not in st.session_state:
+    st.session_state.view = "new"  # "new" | "results"
 
-st.caption("OctaiPipe internal prototype · built for the Monetising Pre-Sales hackathon · not for external distribution")
+TIERS = [
+    (1, "Tier 1 · <1MW", 15000, "5 business days", 4),
+    (5, "Tier 2 · 1–5MW", 35000, "8 business days", 8),
+    (20, "Tier 3 · 5–20MW", 65000, "12 business days", 12),
+    (float("inf"), "Tier 4 · 20MW+", None, "15+ business days, scoped", 16),
+]
+
+
+def tier_for(load_mw):
+    return next(t for t in TIERS if load_mw <= t[0])
+
+
+# ---------------------------------------------------------------------------
+# LOGIN
+# ---------------------------------------------------------------------------
+def login_screen():
+    topbar("Sign in")
+    st.markdown(
+        '<div class="note-box">Prototype login — any work email + any password signs you in. '
+        "This is a demo of the flow, not production authentication.</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("### Sign in to ACE Readiness")
+    with st.form("login_form"):
+        email = st.text_input("Work email", placeholder="you@company.com")
+        password = st.text_input("Password", type="password", placeholder="••••••••")
+        company = st.text_input("Company / site operator name", placeholder="e.g. Meridian Data Centres")
+        submitted = st.form_submit_button("Sign in")
+    if submitted:
+        if not email or "@" not in email:
+            st.error("Enter a valid work email to continue.")
+        elif not password:
+            st.error("Enter a password to continue.")
+        else:
+            st.session_state.user = {
+                "email": email,
+                "company": company or email.split("@")[-1].split(".")[0].title(),
+            }
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# DOCUMENT PROCESSING (derived from real uploads — simulated modelling)
+# ---------------------------------------------------------------------------
+def count_pdf_pages(uploaded_file):
+    if PdfReader is None:
+        return 1
+    try:
+        reader = PdfReader(uploaded_file)
+        return max(1, len(reader.pages))
+    except Exception:
+        return 1
+
+
+def read_bms_points(uploaded_file):
+    """Return a DataFrame of BMS points from a CSV/XLSX upload, or None."""
+    name = uploaded_file.name.lower()
+    try:
+        if name.endswith(".csv"):
+            return pd.read_csv(uploaded_file)
+        elif name.endswith((".xlsx", ".xls")):
+            return pd.read_excel(uploaded_file)
+    except Exception:
+        return None
+    return None
+
+
+def seeded_rng(*parts):
+    key = "|".join(str(p) for p in parts)
+    seed = int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2**32)
+    return random.Random(seed)
+
+
+def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file):
+    """Simulates the Planner pipeline. Real inputs (page/row counts) drive the
+    numbers; coverage, gaps and savings are deterministic pseudo-modelling,
+    not the actual Brick-ontology engine."""
+    rng = seeded_rng(site_name, it_load_mw, len(drawing_files), len(om_files),
+                      bms_file.name if bms_file else "no-bms")
+
+    # --- Brick site model, driven by real document counts ---
+    total_pages = 0
+    for f in drawing_files + om_files:
+        if f.name.lower().endswith(".pdf"):
+            total_pages += count_pdf_pages(f)
+        else:
+            total_pages += 1  # images / other docs count as one unit each
+    total_pages = max(total_pages, 1)
+    assets_modelled = int(total_pages * rng.uniform(28, 52))
+    drawing_sets = len(drawing_files) + len(om_files)
+    model_coverage = round(rng.uniform(84, 97), 1)
+
+    # --- BMS point map, driven by the real uploaded point list if present ---
+    bms_df = read_bms_points(bms_file) if bms_file is not None else None
+    if bms_df is not None and len(bms_df) > 0:
+        points_total = len(bms_df)
+    else:
+        # no BMS file uploaded — estimate from IT load as a fallback
+        points_total = int(it_load_mw * rng.uniform(900, 1300))
+    match_rate = round(rng.uniform(80, 94), 1)
+    points_reconciled = int(points_total * match_rate / 100)
+    points_unmapped = points_total - points_reconciled
+
+    # --- Gap & health report ---
+    mislabelled = max(1, int(points_total * rng.uniform(0.004, 0.012)))
+    controllers_conflict = max(1, int(assets_modelled * rng.uniform(0.002, 0.006)))
+    missing_metering = max(1, int(assets_modelled * rng.uniform(0.005, 0.015)))
+    sequence_drift = max(1, int(controllers_conflict * rng.uniform(0.6, 1.4)))
+
+    # --- Optimisation estimate ---
+    saving_low = round(rng.uniform(7, 13), 1)
+    saving_high = round(saving_low + rng.uniform(3, 6), 1)
+    annual_spend_per_mw = 620_000  # assumed cooling energy spend per MW/year
+    est_saving_low = int(it_load_mw * annual_spend_per_mw * saving_low / 100)
+    est_saving_high = int(it_load_mw * annual_spend_per_mw * saving_high / 100)
+
+    tier_max, tier_name, price, delivery, hours_cap = tier_for(it_load_mw)
+
+    return {
+        "id": f"eng-{int(time.time()*1000)}",
+        "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "site_name": site_name,
+        "it_load_mw": it_load_mw,
+        "tier_name": tier_name,
+        "price": price,
+        "delivery": delivery,
+        "hours_cap": hours_cap,
+        "drawing_sets": drawing_sets,
+        "total_pages": total_pages,
+        "assets_modelled": assets_modelled,
+        "model_coverage": model_coverage,
+        "points_total": points_total,
+        "points_reconciled": points_reconciled,
+        "points_unmapped": points_unmapped,
+        "match_rate": match_rate,
+        "mislabelled": mislabelled,
+        "controllers_conflict": controllers_conflict,
+        "missing_metering": missing_metering,
+        "sequence_drift": sequence_drift,
+        "saving_low": saving_low,
+        "saving_high": saving_high,
+        "est_saving_low": est_saving_low,
+        "est_saving_high": est_saving_high,
+        "bms_source": "uploaded file" if bms_df is not None else "estimated from IT load (no BMS file uploaded)",
+    }
+
+
+def build_report_markdown(e):
+    return f"""# ACE Readiness — {e['site_name']}
+
+Generated {e['created']} · {e['tier_name']} · IT load {e['it_load_mw']} MW
+
+## Commercial
+- Fee: {'${:,}'.format(e['price']) if e['price'] else 'Custom quote'}
+- Delivery: {e['delivery']}
+- Engineer validation cap: {e['hours_cap']} hours
+
+## Brick site model
+- Drawing/O&M sets ingested: {e['drawing_sets']}
+- Total pages processed: {e['total_pages']}
+- Assets modelled: {e['assets_modelled']}
+- Model coverage: {e['model_coverage']}%
+
+## BMS point map ({e['bms_source']})
+- Total points: {e['points_total']}
+- Reconciled: {e['points_reconciled']} ({e['match_rate']}% match)
+- Unmapped: {e['points_unmapped']}
+
+## Gap & health report
+- Mislabelled sensors: {e['mislabelled']}
+- Controllers in conflict: {e['controllers_conflict']}
+- Missing metering points: {e['missing_metering']}
+- Sequence-drift flags: {e['sequence_drift']}
+
+## Optimisation estimate
+- Cooling energy saving: {e['saving_low']}–{e['saving_high']}%
+- Estimated annual saving: ${e['est_saving_low']:,}–${e['est_saving_high']:,}
+- Costed ACE deployment plan: included
+
+---
+*Simulated output for demonstration purposes. Document counts and BMS point
+counts are drawn from the files actually uploaded; coverage, gap and saving
+figures are modelled, not produced by the production Brick-ontology engine.*
+"""
+
+
+# ---------------------------------------------------------------------------
+# NEW ENGAGEMENT
+# ---------------------------------------------------------------------------
+def new_engagement_screen():
+    st.markdown(
+        '<div class="note-box">Numbers below are computed from the files you actually upload '
+        "(page counts, BMS row counts) combined with a deterministic model — this demonstrates "
+        "the flow end to end, but does not run OctaiPipe's production Planner engine.</div>",
+        unsafe_allow_html=True,
+    )
+    st.subheader("New ACE Readiness assessment")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        site_name = st.text_input("Site name", placeholder="e.g. Jurong West DC-3")
+    with col2:
+        it_load = st.slider("IT load (MW)", min_value=0.2, max_value=40.0, value=6.0, step=0.1)
+
+    tier_max, tier_name, price, delivery, hours_cap = tier_for(it_load)
+    price_display = f"${price:,.0f}" if price else "Custom quote"
+    st.markdown(
+        f'<span class="tier-pill">{tier_name}</span> '
+        f'<span style="margin-left:10px;">Fee: <b>{price_display}</b> &middot; '
+        f'Delivery: {delivery} &middot; Validation cap: {hours_cap} hrs</span>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### Upload documents")
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        drawing_files = st.file_uploader(
+            "M&E drawings & equipment schedules", type=["pdf", "png", "jpg", "jpeg"],
+            accept_multiple_files=True, key="drawings",
+        )
+    with d2:
+        om_files = st.file_uploader(
+            "O&M documents", type=["pdf", "png", "jpg", "jpeg"],
+            accept_multiple_files=True, key="om",
+        )
+    with d3:
+        bms_file = st.file_uploader(
+            "BMS point export (CSV or Excel)", type=["csv", "xlsx", "xls"],
+            accept_multiple_files=False, key="bms",
+        )
+
+    if bms_file is not None:
+        preview = read_bms_points(bms_file)
+        if preview is not None:
+            st.caption(f"BMS file: {len(preview)} rows detected. Preview:")
+            st.dataframe(preview.head(5), use_container_width=True)
+        else:
+            st.warning("Couldn't parse that BMS file — it'll be excluded and points will be estimated from IT load instead.")
+
+    ready = bool(site_name) and (len(drawing_files or []) + len(om_files or []) > 0)
+    if not ready:
+        st.caption("Enter a site name and upload at least one drawing or O&M document to run the assessment.")
+
+    if st.button("Run assessment", disabled=not ready, type="primary"):
+        drawing_files = drawing_files or []
+        om_files = om_files or []
+        steps = [
+            ("Uploading documents to Planner…", 0.4),
+            ("Classifying drawings & schedules…", 0.6),
+            ("Building site hierarchy & Brick model…", 0.7),
+            ("Reconciling BMS points…", 0.6),
+            ("Running engineer validation pass…", 0.5),
+            ("Compiling gap & optimisation report…", 0.4),
+        ]
+        progress = st.progress(0.0, text=steps[0][0])
+        for i, (label, delay) in enumerate(steps):
+            time.sleep(delay)
+            progress.progress((i + 1) / len(steps), text=label)
+        result = run_assessment(site_name, it_load, drawing_files, om_files, bms_file)
+        st.session_state.engagements.insert(0, result)
+        st.session_state.current_id = result["id"]
+        st.session_state.view = "results"
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# RESULTS DASHBOARD
+# ---------------------------------------------------------------------------
+def results_screen(e):
+    price_display = f"${e['price']:,.0f}" if e["price"] else "Custom quote"
+    st.subheader(f"{e['site_name']} — assessment results")
+    st.caption(f"{e['tier_name']} · {price_display} · delivered in {e['delivery']} · run {e['created']}")
+
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        st.markdown('<div class="card"><h3>Brick site model</h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Assets modelled</span><b>{e["assets_modelled"]:,}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Drawing sets ingested</span><b>{e["drawing_sets"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Pages processed</span><b>{e["total_pages"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Model coverage</span><b>{e["model_coverage"]}%</b></div>', unsafe_allow_html=True)
+        st.progress(e["model_coverage"] / 100)
+        st.markdown('<span class="tag ok">As-designed twin ready</span></div>', unsafe_allow_html=True)
+
+    with d2:
+        st.markdown('<div class="card"><h3>BMS point map</h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Points reconciled</span><b>{e["points_reconciled"]:,} / {e["points_total"]:,}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>As-controlled match</span><b>{e["match_rate"]}%</b></div>', unsafe_allow_html=True)
+        st.progress(e["match_rate"] / 100)
+        st.markdown(f'<span class="tag warn">{e["points_unmapped"]} points unmapped</span></div>', unsafe_allow_html=True)
+        st.caption(e["bms_source"])
+
+    with d3:
+        st.markdown('<div class="card"><h3>Gap & health report</h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Mislabelled sensors</span><b>{e["mislabelled"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Controllers in conflict</span><b>{e["controllers_conflict"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Missing metering points</span><b>{e["missing_metering"]}</b></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<span class="tag warn">{e["sequence_drift"]} sequence-drift flags</span>'
+            '<span class="tag ok">Full log included</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    with d4:
+        st.markdown('<div class="card"><h3>Optimisation estimate</h3>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Cooling energy saving</span><b>{e["saving_low"]}–{e["saving_high"]}%</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-row"><span>Est. annual saving</span><b>${e["est_saving_low"]:,}–${e["est_saving_high"]:,}</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="metric-row"><span>Costed ACE deployment</span><b>Included</b></div>', unsafe_allow_html=True)
+        st.markdown('<span class="tag ok">3 load scenarios modelled</span></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    conv = st.selectbox("Expected time to ACE decision", ["Within 6 months", "7–9 months", "After 9 months"], key=f"conv-{e['id']}")
+    if conv == "Within 6 months":
+        credit = "100% of the fee is credited against year-one ACE spend."
+    elif conv == "7–9 months":
+        credit = "50% of the fee is credited against year-one ACE spend."
+    else:
+        credit = "No credit applies — the engagement stands on its own."
+    st.markdown(f'<div class="credit-box">{credit}</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        st.download_button(
+            "Download report (Markdown)",
+            data=build_report_markdown(e),
+            file_name=f"ACE_Readiness_{e['site_name'].replace(' ', '_')}.md",
+            mime="text/markdown",
+        )
+    with c2:
+        if st.button("Start ACE subscription →"):
+            st.success("Credit applied — a solutions engineer will follow up to confirm scope.")
+    with c3:
+        if st.button("← Back to new assessment"):
+            st.session_state.view = "new"
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# MAIN APP
+# ---------------------------------------------------------------------------
+if st.session_state.user is None:
+    login_screen()
+else:
+    topbar(f"Signed in as {st.session_state.user['email']} · {st.session_state.user['company']}")
+
+    with st.sidebar:
+        st.markdown(f"**{st.session_state.user['company']}**")
+        st.caption(st.session_state.user["email"])
+        st.markdown("---")
+        if st.button("＋ New assessment", use_container_width=True):
+            st.session_state.view = "new"
+            st.rerun()
+        st.markdown("**My assessments**")
+        if not st.session_state.engagements:
+            st.caption("No assessments run yet this session.")
+        for eng in st.session_state.engagements:
+            label = f"{eng['site_name']} — {eng['tier_name'].split(' · ')[0]}"
+            if st.button(label, key=f"nav-{eng['id']}", use_container_width=True):
+                st.session_state.current_id = eng["id"]
+                st.session_state.view = "results"
+                st.rerun()
+        st.markdown("---")
+        st.caption("Assessments are stored for this browser session only and are not saved to a database in this prototype.")
+        if st.button("Log out", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.engagements = []
+            st.session_state.current_id = None
+            st.session_state.view = "new"
+            st.rerun()
+
+    if st.session_state.view == "results" and st.session_state.current_id:
+        current = next((e for e in st.session_state.engagements if e["id"] == st.session_state.current_id), None)
+        if current:
+            results_screen(current)
+        else:
+            new_engagement_screen()
+    else:
+        new_engagement_screen()
