@@ -88,6 +88,48 @@ TIERS = [
     (float("inf"), "Tier 4 · 20MW+", None, "15+ business days, scoped", 16),
 ]
 
+COMPLIANCE_FRAMEWORKS = {
+    "ISO/IEC 27001": {
+        "control_area": "Annex A.7 Physical & environmental security · A.8 Asset management",
+        "evidence": "Asset register (Brick site model) and environmental monitoring points",
+    },
+    "SOC 2": {
+        "control_area": "Security & Availability Trust Service Criteria (CC6.4, CC7.2, A1.2)",
+        "evidence": "BMS environmental monitoring and redundancy evidence",
+    },
+    "PCI DSS": {
+        "control_area": "Requirement 9 — physical access to the cardholder data environment",
+        "evidence": "Physical access and environmental control points around CDE zones",
+    },
+    "HIPAA": {
+        "control_area": "Security Rule Physical Safeguards §164.310",
+        "evidence": "Facility access, environmental and maintenance records for ePHI hosting areas",
+    },
+    "GDPR": {
+        "control_area": "Article 32 — security & resilience of processing systems",
+        "evidence": "Continuous environmental monitoring supporting resilience and incident visibility",
+    },
+    "NIST SP 800-53 / FedRAMP": {
+        "control_area": "PE family — Physical & Environmental Protection (PE-3, PE-13, PE-14, PE-17)",
+        "evidence": "Direct BMS point-by-point mapping to the PE control catalog",
+    },
+    "TIA-942": {
+        "control_area": "Tier I–IV infrastructure redundancy rating",
+        "evidence": "As-built redundancy (N / N+1 / 2N) assessed directly from the Brick model and BMS",
+    },
+}
+
+COMPLIANCE_PER_FRAMEWORK_FEE = 4000
+COMPLIANCE_BUNDLE_CAP = 18000
+COMPLIANCE_EXTRA_DAYS = 2
+COMPLIANCE_HOURS_PER_FRAMEWORK = 3
+
+
+def compliance_addon_price(n_frameworks):
+    if n_frameworks == 0:
+        return 0
+    return min(n_frameworks * COMPLIANCE_PER_FRAMEWORK_FEE, COMPLIANCE_BUNDLE_CAP)
+
 
 def tier_for(load_mw):
     return next(t for t in TIERS if load_mw <= t[0])
@@ -154,10 +196,25 @@ def seeded_rng(*parts):
     return random.Random(seed)
 
 
-def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file):
+def compliance_status(model_coverage, match_rate, missing_metering, controllers_conflict):
+    """Deterministic evidence-readiness status per framework, from the same
+    assessment metrics — no separate data collection required."""
+    if model_coverage >= 92 and match_rate >= 88:
+        return ("ready", "Evidence ready — no gaps blocking this control area.")
+    gaps = []
+    if missing_metering:
+        gaps.append(f"{missing_metering} missing metering point(s)")
+    if controllers_conflict:
+        gaps.append(f"{controllers_conflict} conflicting controller(s)")
+    gap_text = " and ".join(gaps) if gaps else "minor model gaps"
+    return ("partial", f"Partial evidence — resolve {gap_text} before this is audit-ready.")
+
+
+def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file, frameworks=None):
     """Simulates the Planner pipeline. Real inputs (page/row counts) drive the
     numbers; coverage, gaps and savings are deterministic pseudo-modelling,
     not the actual Brick-ontology engine."""
+    frameworks = frameworks or []
     rng = seeded_rng(site_name, it_load_mw, len(drawing_files), len(om_files),
                       bms_file.name if bms_file else "no-bms")
 
@@ -199,6 +256,20 @@ def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file):
 
     tier_max, tier_name, price, delivery, hours_cap = tier_for(it_load_mw)
 
+    # --- Compliance evidence pack (add-on) ---
+    addon_price = compliance_addon_price(len(frameworks))
+    addon_hours = len(frameworks) * COMPLIANCE_HOURS_PER_FRAMEWORK
+    addon_days = COMPLIANCE_EXTRA_DAYS if frameworks else 0
+    compliance_results = {}
+    for fw in frameworks:
+        status, note = compliance_status(model_coverage, match_rate, missing_metering, controllers_conflict)
+        compliance_results[fw] = {
+            "status": status,
+            "note": note,
+            "control_area": COMPLIANCE_FRAMEWORKS[fw]["control_area"],
+            "evidence": COMPLIANCE_FRAMEWORKS[fw]["evidence"],
+        }
+
     return {
         "id": f"eng-{int(time.time()*1000)}",
         "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -208,6 +279,11 @@ def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file):
         "price": price,
         "delivery": delivery,
         "hours_cap": hours_cap,
+        "frameworks": frameworks,
+        "addon_price": addon_price,
+        "addon_hours": addon_hours,
+        "addon_days": addon_days,
+        "compliance_results": compliance_results,
         "drawing_sets": drawing_sets,
         "total_pages": total_pages,
         "assets_modelled": assets_modelled,
@@ -229,6 +305,20 @@ def run_assessment(site_name, it_load_mw, drawing_files, om_files, bms_file):
 
 
 def build_report_markdown(e):
+    compliance_section = ""
+    if e.get("frameworks"):
+        rows = "\n".join(
+            f"- **{fw}** ({e['compliance_results'][fw]['control_area']}): "
+            f"{e['compliance_results'][fw]['note']}"
+            for fw in e["frameworks"]
+        )
+        compliance_section = f"""
+## Compliance evidence pack (add-on)
+- Frameworks covered: {', '.join(e['frameworks'])}
+- Add-on fee: ${e['addon_price']:,} · adds {e['addon_days']} business days · +{e['addon_hours']} validation hours
+
+{rows}
+"""
     return f"""# ACE Readiness — {e['site_name']}
 
 Generated {e['created']} · {e['tier_name']} · IT load {e['it_load_mw']} MW
@@ -237,7 +327,7 @@ Generated {e['created']} · {e['tier_name']} · IT load {e['it_load_mw']} MW
 - Fee: {'${:,}'.format(e['price']) if e['price'] else 'Custom quote'}
 - Delivery: {e['delivery']}
 - Engineer validation cap: {e['hours_cap']} hours
-
+{compliance_section}
 ## Brick site model
 - Drawing/O&M sets ingested: {e['drawing_sets']}
 - Total pages processed: {e['total_pages']}
@@ -320,6 +410,27 @@ def new_engagement_screen():
         else:
             st.warning("Couldn't parse that BMS file — it'll be excluded and points will be estimated from IT load instead.")
 
+    st.markdown("#### Compliance evidence pack (optional add-on)")
+    st.caption(
+        "The same Brick model and BMS point map already produced above doubles as physical/environmental "
+        "control evidence for these frameworks — no separate data collection. This maps evidence for the "
+        "physical & environmental control domains within each framework; it is not a full certification."
+    )
+    frameworks = st.multiselect(
+        "Frameworks to map evidence against",
+        options=list(COMPLIANCE_FRAMEWORKS.keys()),
+        key="frameworks",
+    )
+    if frameworks:
+        addon_price = compliance_addon_price(len(frameworks))
+        st.markdown(
+            f'<span class="tier-pill">+{len(frameworks)} framework(s)</span> '
+            f'<span style="margin-left:10px;">Add-on fee: <b>${addon_price:,}</b> &middot; '
+            f'+{COMPLIANCE_EXTRA_DAYS} business days &middot; '
+            f'+{len(frameworks) * COMPLIANCE_HOURS_PER_FRAMEWORK} validation hours</span>',
+            unsafe_allow_html=True,
+        )
+
     ready = bool(site_name) and (len(drawing_files or []) + len(om_files or []) > 0)
     if not ready:
         st.caption("Enter a site name and upload at least one drawing or O&M document to run the assessment.")
@@ -335,11 +446,13 @@ def new_engagement_screen():
             ("Running engineer validation pass…", 0.5),
             ("Compiling gap & optimisation report…", 0.4),
         ]
+        if frameworks:
+            steps.append(("Mapping evidence to compliance frameworks…", 0.5))
         progress = st.progress(0.0, text=steps[0][0])
         for i, (label, delay) in enumerate(steps):
             time.sleep(delay)
             progress.progress((i + 1) / len(steps), text=label)
-        result = run_assessment(site_name, it_load, drawing_files, om_files, bms_file)
+        result = run_assessment(site_name, it_load, drawing_files, om_files, bms_file, frameworks)
         st.session_state.engagements.insert(0, result)
         st.session_state.current_id = result["id"]
         st.session_state.view = "results"
@@ -351,8 +464,12 @@ def new_engagement_screen():
 # ---------------------------------------------------------------------------
 def results_screen(e):
     price_display = f"${e['price']:,.0f}" if e["price"] else "Custom quote"
+    total_display = ""
+    if e.get("addon_price"):
+        total = (e["price"] or 0) + e["addon_price"]
+        total_display = f" · with compliance add-on: ${total:,.0f}"
     st.subheader(f"{e['site_name']} — assessment results")
-    st.caption(f"{e['tier_name']} · {price_display} · delivered in {e['delivery']} · run {e['created']}")
+    st.caption(f"{e['tier_name']} · {price_display}{total_display} · delivered in {e['delivery']} · run {e['created']}")
 
     d1, d2, d3, d4 = st.columns(4)
     with d1:
@@ -391,6 +508,28 @@ def results_screen(e):
         st.markdown('<span class="tag ok">3 load scenarios modelled</span></div>', unsafe_allow_html=True)
 
     st.markdown("---")
+
+    if e.get("frameworks"):
+        st.markdown("#### Compliance evidence pack")
+        st.caption(
+            f"Add-on fee ${e['addon_price']:,} · +{e['addon_days']} business days · "
+            f"+{e['addon_hours']} validation hours · mapped from the same model above, no extra data collection."
+        )
+        cols = st.columns(len(e["frameworks"]))
+        for col, fw in zip(cols, e["frameworks"]):
+            res = e["compliance_results"][fw]
+            tag_class = "ok" if res["status"] == "ready" else "warn"
+            tag_text = "Evidence ready" if res["status"] == "ready" else "Partial evidence"
+            with col:
+                st.markdown(
+                    f'<div class="card"><h3>{fw}</h3>'
+                    f'<div style="font-size:12px;color:#3A3A3A;margin-bottom:8px;">{res["control_area"]}</div>'
+                    f'<div style="font-size:13px;margin-bottom:8px;">{res["note"]}</div>'
+                    f'<span class="tag {tag_class}">{tag_text}</span></div>',
+                    unsafe_allow_html=True,
+                )
+        st.markdown("---")
+
     conv = st.selectbox("Expected time to ACE decision", ["Within 6 months", "7–9 months", "After 9 months"], key=f"conv-{e['id']}")
     if conv == "Within 6 months":
         credit = "100% of the fee is credited against year-one ACE spend."

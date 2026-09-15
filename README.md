@@ -17,6 +17,13 @@ uploaded. Built for the Monetising Pre-Sales hackathon.
   BMS reconciliation and optimisation estimate are a deterministic model
   seeded from your inputs, not OctaiPipe's production Planner engine — that
   lives in Planner's own backend and isn't something a prototype can call.
+- **Compliance evidence pack (add-on)** — real: an optional multi-select of
+  seven frameworks (ISO 27001, SOC 2, PCI DSS, HIPAA, GDPR, NIST 800-53 /
+  FedRAMP, TIA-942). Pricing and status are computed live from the same
+  assessment data, no separate collection step. Important scope note: this
+  maps evidence for the *physical & environmental* control domains within
+  each framework (the ones a data-centre-level assessment can actually speak
+  to) — it is not a full certification or audit of the whole framework.
 - **Session history** — each signed-in session keeps a list of assessments
   you've run, browsable from the sidebar. This resets on logout or when the
   app restarts — there's no database. Ask if you want a persistent version
